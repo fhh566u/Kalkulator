@@ -1,1 +1,259 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text.RegularExpressions;
 
+namespace Kalkulator
+{
+    public class Program
+    {
+        public static void Main()
+        {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            var calc = new Calculator();
+            string expression;
+
+            Console.WriteLine("Допущені символи: +, -, *, /, ^ (степінь), sin, cos, log, (), e");
+            Console.WriteLine("Введіть 'exit' або 'leave' для виходу.");
+            Console.WriteLine("---");
+
+            while (true)
+            {
+                Console.Write("Введіть вираз: ");
+                expression = Console.ReadLine();
+
+                if (string.IsNullOrWhiteSpace(expression))
+                {
+                    continue;
+                }
+
+                if (expression.Equals("exit", StringComparison.OrdinalIgnoreCase) ||
+                    expression.Equals("quit", StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                string result = calc.Evaluate(expression);
+                Console.WriteLine($"Результат: {result}");
+            }
+
+            Console.WriteLine("До побачення!");
+        }
+    }
+
+    public abstract class Token { }
+
+    public class Number : Token
+    {
+        public double Value { get; }
+        public Number(double value) => Value = value;
+    }
+
+    public abstract class Operation : Token
+    {
+        public abstract int Priority { get; }
+        public virtual bool IsRightAssociative => false;
+
+        public bool IsLowerPriorityThan(Operation other)
+        {
+            if (other is LeftParenthesis) return false;
+
+            if (this.Priority < other.Priority) return true;
+
+            if (this.Priority == other.Priority && !this.IsRightAssociative) return true;
+
+            return false;
+        }
+
+        public abstract void Calculate(Stack<double> stack);
+    }
+
+    public class LeftParenthesis : Operation
+    {
+        public override int Priority => 0;
+        public override void Calculate(Stack<double> stack) { }
+    }
+
+    public class RightParenthesis : Token { }
+
+    public abstract class BinaryOperation : Operation
+    {
+        public override void Calculate(Stack<double> stack)
+        {
+            if (stack.Count < 2) throw new Exception("Недостатньо аргументів для бінарної операції.");
+            var right = stack.Pop();
+            var left = stack.Pop();
+            stack.Push(Execute(left, right));
+        }
+        protected abstract double Execute(double left, double right);
+    }
+
+    public abstract class UnaryOperation : Operation
+    {
+        public override bool IsRightAssociative => true;
+        public override void Calculate(Stack<double> stack)
+        {
+            if (stack.Count < 1) throw new Exception("Недостатньо аргументів для бінарної операції.");
+            var arg = stack.Pop();
+            stack.Push(Execute(arg));
+        }
+        protected abstract double Execute(double arg);
+    }
+
+    class Plus : BinaryOperation { public override int Priority => 1; protected override double Execute(double l, double r) => l + r; }
+    class Minus : BinaryOperation { public override int Priority => 1; protected override double Execute(double l, double r) => l - r; }
+    class Multiply : BinaryOperation { public override int Priority => 2; protected override double Execute(double l, double r) => l * r; }
+    class Divide : BinaryOperation { public override int Priority => 2; protected override double Execute(double l, double r) => l / r; }
+    class Power : BinaryOperation
+    {
+        public override int Priority => 3;
+        public override bool IsRightAssociative => true;
+        protected override double Execute(double l, double r) => Math.Pow(l, r);
+    }
+
+    class UnaryMinus : UnaryOperation { public override int Priority => 4; protected override double Execute(double arg) => -arg; }
+    class Sin : UnaryOperation { public override int Priority => 4; protected override double Execute(double arg) => Math.Sin(arg); }
+    class Cos : UnaryOperation { public override int Priority => 4; protected override double Execute(double arg) => Math.Cos(arg); }
+    class Log : UnaryOperation { public override int Priority => 4; protected override double Execute(double arg) => Math.Log10(arg); }
+
+    public class Tokenizer
+    {
+        private readonly Dictionary<string, Func<string, Token>> _tokenFactories;
+        private readonly Regex _regex;
+
+        public Tokenizer()
+        {
+            _tokenFactories = new Dictionary<string, Func<string, Token>>
+            {
+                { "Number", s => new Number(double.Parse(s, CultureInfo.InvariantCulture)) },
+                { "Plus", _ => new Plus() },
+                { "BinaryMinus", _ => new Minus() },
+                { "UnaryMinus", _ => new UnaryMinus() },
+                { "Multiply", _ => new Multiply() },
+                { "Divide", _ => new Divide() },
+                { "Power", _ => new Power() },
+                { "LParen", _ => new LeftParenthesis() },
+                { "RParen", _ => new RightParenthesis() },
+                { "Sin", _ => new Sin() },
+                { "Cos", _ => new Cos() },
+                { "Log", _ => new Log() }
+            };
+
+            string pattern = string.Join("|", new[]
+            {
+                @"(?<Number>\d+(\.\d+)?(e[+\-]?\d+)?)",
+                @"(?<Log>log)",
+                @"(?<Sin>sin)",
+                @"(?<Cos>cos)",
+                @"(?<Plus>\+)",
+                @"(?<BinaryMinus>(?<=[)\d])-)", 
+                @"(?<UnaryMinus>-)",             
+                @"(?<Multiply>\*)",
+                @"(?<Divide>/)",
+                @"(?<Power>\^)",
+                @"(?<LParen>\()",
+                @"(?<RParen>\))",
+                @"(?<Unknown>\S)"
+            });
+
+            _regex = new Regex(pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        }
+
+        public List<Token> Tokenize(string input)
+        {
+            var tokens = new List<Token>();
+            
+            string cleanInput = input.Replace(" ", "");
+
+            foreach (Match match in _regex.Matches(cleanInput))
+            {
+                if (match.Groups["Unknown"].Success)
+                {
+                    throw new Exception("Невідомий символ у виразі.");
+                }
+
+                foreach (var groupName in _tokenFactories.Keys)
+                {
+                    if (match.Groups[groupName].Success)
+                    {
+                        tokens.Add(_tokenFactories[groupName](match.Value));
+                        break;
+                    }
+                }
+            }
+            return tokens;
+        }
+    }
+
+
+ 
+    public class Calculator
+    {
+        private readonly Tokenizer _tokenizer = new Tokenizer();
+
+        public string Evaluate(string expression)
+        {
+            try
+            {
+                var tokens = _tokenizer.Tokenize(expression);
+                var numbers = new Stack<double>();
+                var operations = new Stack<Operation>();
+
+                foreach (var token in tokens)
+                {
+                    if (token is Number num)
+                    {
+                        numbers.Push(num.Value);
+                    }
+                    else if (token is LeftParenthesis lp)
+                    {
+                        operations.Push(lp);
+                    }
+                    else if (token is RightParenthesis)
+                    {
+                       
+                        while (operations.Count > 0 && !(operations.Peek() is LeftParenthesis))
+                        {
+                            operations.Pop().Calculate(numbers);
+                        }
+
+                        if (operations.Count == 0 || !(operations.Pop() is LeftParenthesis))
+                            throw new Exception("Неправильна кількість дужок (зайва '(').");
+                    }
+                    else if (token is Operation op)
+                    {
+                        
+                        while (operations.Count > 0 && op.IsLowerPriorityThan(operations.Peek()))
+                        {
+                            operations.Pop().Calculate(numbers);
+                        }
+                        operations.Push(op);
+                    }
+                }
+
+                while (operations.Count > 0)
+                {
+                    var op = operations.Pop();
+                    if (op is LeftParenthesis) throw new Exception(" Не вистачає дужок (пропущена ')').");
+                    op.Calculate(numbers);
+                }
+
+                if (numbers.Count != 1) throw new Exception("Неправильна структура виразу.");
+
+                var result = numbers.Pop();
+
+                if (double.IsInfinity(result) || double.IsNaN(result))
+                {
+                    return "ERROR";
+                }
+
+                return result.ToString(CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                return "ERROR";
+            }
+        }
+    }
+}
